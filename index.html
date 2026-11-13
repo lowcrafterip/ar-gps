@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>AR по GPS</title>
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/three.js/build/ar-threex-location-only.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
+  <script src="snowman.js"></script>
+  <script src="tree.js"></script>
+  <script src="mushroom.js"></script>
+  <script src="star.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: -apple-system, Helvetica, sans-serif; }
+    #hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 10px; right: 10px; z-index: 10; padding: 10px 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; line-height: 1.45; pointer-events: none; }
+    #hud b { font-size: 15px; }
+    #start { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: rgba(10, 16, 30, 0.92); color: #fff; text-align: center; padding: 24px; }
+    #start p { margin: 0; font-size: 16px; line-height: 1.5; max-width: 320px; opacity: 0.9; }
+    #start button { font-size: 20px; font-weight: 700; padding: 16px 40px; border: 0; border-radius: 14px; background: #facc15; color: #111; }
+  </style>
+</head>
+<body>
+  <div id="start"><p>Модели появятся вокруг тебя в 20 метрах на севере, востоке, юге и западе. Лучше на улице, разреши камеру, геолокацию и датчики движения</p><button id="go">Начать</button></div>
+  <div id="hud"><b>Жду GPS</b><br>Разреши доступ к камере, геолокации и датчикам движения</div>
+  <a-scene vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" renderer="antialias: true; alpha: true; colorManagement: true" arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false">
+    <a-entity light="type: hemisphere; color: #ffffff; groundColor: #8899aa; intensity: 1.4"></a-entity>
+    <a-entity light="type: directional; color: #ffffff; intensity: 1.8" position="1 3 2"></a-entity>
+    <a-camera gps-new-camera="gpsMinDistance: 3; positionMinAccuracy: 1000" look-controls-enabled="false" arjs-device-orientation-controls="smoothingFactor: 0.1"></a-camera>
+  </a-scene>
+  <script>
+    const PLACES = [
+      { name: "Снеговик", side: "север", model: "snowman", north: 20, east: 0, scale: 8 },
+      { name: "Ёлка", side: "восток", model: "tree", north: 0, east: 20, scale: 9 },
+      { name: "Грибочек", side: "юг", model: "mushroom", north: -20, east: 0, scale: 8 },
+      { name: "Звезда", side: "запад", model: "star", north: 0, east: -20, scale: 7, spin: true }
+    ];
+
+    const scene = document.querySelector("a-scene");
+    const hud = document.getElementById("hud");
+    const camEl = document.querySelector("[gps-new-camera]");
+    const dist = {};
+    let placed = false, accuracy = null, here = null;
+
+    function haversine(a, b, c, d) {
+      const r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2);
+      return 2 * 6371000 * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y));
+    }
+
+    function render() {
+      if (!here) return;
+      PLACES.forEach(p => { if (p.lat !== undefined) dist[p.name] = haversine(here.lat, here.lon, p.lat, p.lon); });
+      const lines = PLACES.map(p => `${p.name} на ${p.side}е ${dist[p.name] != null ? Math.round(dist[p.name]) + " м" : ""}`);
+      hud.innerHTML = `<b>Модели вокруг тебя</b><br>${lines.join("<br>")}<br>GPS ${here.lat.toFixed(5)}, ${here.lon.toFixed(5)}${accuracy ? ", точность " + Math.round(accuracy) + " м" : ""}`;
+    }
+
+    function place(lat, lon) {
+      PLACES.forEach(p => {
+        const dLat = p.north / 111320;
+        const dLon = p.east / (111320 * Math.cos(lat * Math.PI / 180));
+        const root = document.createElement("a-entity");
+        root.setAttribute("gps-new-entity-place", `latitude: ${lat + dLat}; longitude: ${lon + dLon}`);
+        root.dataset.name = p.name;
+        p.lat = lat + dLat;
+        p.lon = lon + dLon;
+        const model = document.createElement("a-entity");
+        model.setAttribute("gltf-model", window.MODELS[p.model]);
+        model.setAttribute("scale", `${p.scale} ${p.scale} ${p.scale}`);
+        model.setAttribute("position", "0 -1.5 0");
+        model.setAttribute("animation", p.spin
+          ? "property: rotation; to: 0 360 0; loop: true; dur: 3000; easing: linear"
+          : "property: rotation; to: 0 360 0; loop: true; dur: 12000; easing: linear");
+        root.appendChild(model);
+        scene.appendChild(root);
+      });
+      placed = true;
+    }
+
+    camEl.addEventListener("gps-camera-update-position", e => {
+      here = { lat: e.detail.position.latitude, lon: e.detail.position.longitude };
+      if (!placed) place(here.lat, here.lon);
+      render();
+    });
+
+    document.getElementById("go").addEventListener("click", () => {
+      document.getElementById("start").remove();
+      const reconnect = () => {
+        const ctl = camEl.components["arjs-device-orientation-controls"];
+        if (ctl && ctl._orientationControls) {
+          ctl._orientationControls.disconnect();
+          ctl._orientationControls.connect();
+        }
+      };
+      if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") {
+        DeviceOrientationEvent.requestPermission().then(reconnect).catch(reconnect);
+      } else {
+        reconnect();
+      }
+    });
+
+    let lastFix = 0;
+    window.addEventListener("deviceorientation", e => {
+      if (e.webkitCompassHeading === undefined || e.alpha === null) return;
+      const ctl = camEl.components["arjs-device-orientation-controls"];
+      if (!ctl || !ctl._orientationControls) return;
+      const now = performance.now();
+      if (now - lastFix < 3000 || (e.webkitCompassAccuracy !== undefined && (e.webkitCompassAccuracy < 0 || e.webkitCompassAccuracy > 40))) return;
+      lastFix = now;
+      const want = (360 - e.webkitCompassHeading - e.alpha + 720) % 360;
+      const oc = ctl._orientationControls;
+      const cur = ((oc.alphaOffset * 180 / Math.PI) % 360 + 360) % 360;
+      const diff = Math.abs(((want - cur + 540) % 360) - 180);
+      if (oc.alphaOffset === 0 || diff > 10) oc.alphaOffset = want * Math.PI / 180;
+    });
+
+    if (navigator.geolocation) {
+      navigator.geolocation.watchPosition(p => { accuracy = p.coords.accuracy; render(); }, () => {}, { enableHighAccuracy: true });
+    }
+  </script>
+</body>
+</html>
